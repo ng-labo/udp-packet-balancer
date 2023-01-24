@@ -1,4 +1,6 @@
-## udp-packet-balancersimplest udp packet balancer
+## udp-packet-balancer
+
+simplest udp packet proxy to load balancing.
 
 motivation
 : desire a program like a nginx udp balancer, with spoofing source address.
@@ -7,7 +9,7 @@ target situaiton
 : udp client-server communication which use a bit long alive session.
 : the case it is easy to add server process in different port.
 
-### udp packet balancer to load distribution
+### udp packet proxy to balance load
 
 n udp-clients access to one udp-balancer, it forwards packets to m udp-server.
 and send back packets from udp-server to each client.
