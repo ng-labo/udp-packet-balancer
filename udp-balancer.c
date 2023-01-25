@@ -79,6 +79,7 @@ void parse_host_port(const char* arg, char* host, unsigned short* port) {
 }
 
 void initialize(int ac, const char* av[], struct variables* ctx) {
+    memset(ctx, 0, sizeof(struct variables));
     parse_host_port(av[1], ctx->selfhost, &(ctx->selfport));
 
     for (int i=2; i < ac; i++) {
@@ -98,7 +99,6 @@ void initialize(int ac, const char* av[], struct variables* ctx) {
         ctx->branchfd[i] = -1;
         setzero_sockaddr_in(&(ctx->branchaddr[i]));
     }
-
 }
 
 int init_acceptor(struct variables *ctx) {
@@ -130,6 +130,10 @@ static inline int nfds(struct variables *ctx) {
     return (ret + 1);
 }
 
+static inline int newbranchindex(struct variables* ctx, int connindex) {
+    return CONNUM % connindex;
+}
+
 static inline int getbranchindex(struct sockaddr_in* t, struct variables* ctx) {
     time_t now = time(NULL);
     for (int i = 0; i < CONNUM; i++) {
@@ -147,13 +151,18 @@ static inline int getbranchindex(struct sockaddr_in* t, struct variables* ctx) {
             ctx->lasttscon[i] = 0;
             setzero_sockaddr_in(&(ctx->caddr[i]));
             printf("cleanup index=%d\n", i);
+            ctx->activecount[ctx->branchindexinconn[i]]--;
         }
     }
     for (int i=0; i < CONNUM; i++) {
         if (ctx->branchfd[i] == -1) {
             ctx->branchfd[i] = branchsocket();
-            ctx->branchaddr[i] = ctx->branch_s_addr[i % ctx->branchnum];
+            int newindex = newbranchindex(ctx, i);
+            ctx->branchaddr[i] = ctx->branch_s_addr[newindex];
             ctx->caddr[i] = *t;
+
+            ctx->branchindexinconn[i] = newindex;
+            ctx->activecount[newindex]++;
             //printf("branchfd[%d]=%d\n", i, ctx->branchfd[i]);
             return i;
         }
@@ -175,10 +184,10 @@ void process(struct variables* ctx) {
             error("select");
         }
 
-        for (int i=0; i < CONNUM; i++) {
+        for (int i = 0; i < CONNUM; i++) {
             // socket corresponding for branch-i
             int fd = ctx->branchfd[i];
-            if(fd < 0) continue;
+            if (fd < 0) continue;
             if (!FD_ISSET(fd, &rset)) continue;
             // this is a signaled fd.
             struct sockaddr_in c;
