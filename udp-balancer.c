@@ -131,7 +131,7 @@ static inline int nfds(struct variables *ctx) {
 }
 
 static inline int newbranchindex(struct variables* ctx, int connindex) {
-    return connindex % CONNUM;
+    return connindex % ctx->branchnum;
 }
 
 static inline int getbranchindex(struct sockaddr_in* t, struct variables* ctx) {
@@ -154,7 +154,7 @@ static inline int getbranchindex(struct sockaddr_in* t, struct variables* ctx) {
             ctx->activecount[ctx->branchindexinconn[i]]--;
         }
     }
-    for (int i=0; i < CONNUM; i++) {
+    for (int i = 0; i < CONNUM; i++) {
         if (ctx->branchfd[i] == -1) {
             ctx->branchfd[i] = branchsocket();
             int newindex = newbranchindex(ctx, i);
@@ -163,7 +163,9 @@ static inline int getbranchindex(struct sockaddr_in* t, struct variables* ctx) {
 
             ctx->branchindexinconn[i] = newindex;
             ctx->activecount[newindex]++;
-            //printf("branchfd[%d]=%d\n", i, ctx->branchfd[i]);
+#if DEBUG
+            printf("branchfd[%d]=%d\n", i, ctx->branchfd[i]);
+#endif
             return i;
         }
     }
@@ -195,13 +197,17 @@ void process(struct variables* ctx) {
             // receive.
             int len = recvfrom(fd, buffer, sizeof(buffer), 0, (struct sockaddr*) &c, &sz);
             if (len < 0) {
-                //printf("failed to recvfrom from boss\n");
+#if DEBUG
+                printf("failed to recvfrom from boss\n");
+#endif
                 ctx->error_recvfrom++;
             }
             // relay to client i.
             if (sendto(ctx->sockfd, (const char*) buffer, len, 0,
                        (struct sockaddr*) &(ctx->caddr[i]), sizeof(ctx->caddr[i])) < 0) {
-                //printf("failed i=%d, fd=%d\n", i, fd);
+#if DEBUG
+                printf("failed i=%d, fd=%d\n", i, fd);
+#endif
                 ctx->error_sendto++;
             }
         }
@@ -211,20 +217,31 @@ void process(struct variables* ctx) {
             int sz = sizeof(t);
             int len = recvfrom(ctx->sockfd, buffer, sizeof(buffer), 0, (struct sockaddr*) &t, &sz);
             if (len < 0) {
-                //printf("failed recvfrom\n");
+#if DEBUG
+                printf("failed recvfrom\n");
+#endif
                 ctx->error_recvfrom++;
             }
-            //printf("Message from UDP client: len=%d (S_addr=%d port=%d)\n", len, t.sin_addr.s_addr,t.sin_port);
+#if DEBUG
+            printf("Message from UDP client: len=%d (S_addr=%d port=%d)\n", len, t.sin_addr.s_addr,t.sin_port);
+#endif
 
             int branchidx = getbranchindex(&t, ctx);
+#if DEBUG
+            printf("getbranchindex=%d\n", branchidx);
+#endif
             if (branchidx < 0) {
-                //printf("failed get branch-index corresponding to client\n");
+#if DEBUG
+                printf("failed get branch-index corresponding to client\n");
+#endif
                 ctx->failed_assign++;
             } else {
                 if (sendto(ctx->branchfd[branchidx], buffer, len, 0,
                            (struct sockaddr*) &(ctx->branchaddr[branchidx]),
                            sizeof(ctx->branchaddr[branchidx])) < 0) {
-                    //printf("failed to send to boss\n");
+#if DEBUG
+                    printf("failed to send to boss\n");
+#endif
                     ctx->error_sendto++;
                 }
             }
