@@ -21,7 +21,16 @@ client 2 <->  | udp-balancer | <-> | udp-server-process 2 |
 client n <->  |              | <-> | udp-server-process m |
 ```
 
+###
+
+```
+$ autoreconf --verbose --install --force
+$ ./configure
+$ make
+```
+
 ### TODO
-- enable multi server host(multi address)
+- ~enable multi server host(multi address)~
 - spoofing source address in udp-balancer(source nat)
 - to be selective balancing algorithm
+- ipv6 available
