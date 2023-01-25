@@ -131,7 +131,7 @@ static inline int nfds(struct variables *ctx) {
 }
 
 static inline int newbranchindex(struct variables* ctx, int connindex) {
-    return CONNUM % connindex;
+    return connindex % CONNUM;
 }
 
 static inline int getbranchindex(struct sockaddr_in* t, struct variables* ctx) {
