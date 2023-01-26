@@ -8,8 +8,11 @@
 #include <time.h>
 #include "udp-balancer.h"
 
+extern int raw_send_from_to(int s, const void* msg, size_t msglen, struct sockaddr* saddr_generic, struct sockaddr* daddr_generic, int ttl, int flags);
+extern int make_raw_udp_socket(size_t socketbuflen, int af);
+
 void usage() {
-    fprintf(stderr, "udp-balancer [accpter-ipaddress:port] [branch-1 ipaddress:port] [branch-2...] ...\n");
+    fprintf(stderr, "udp-balancer [-s] accpter-ipaddress:port branch-1-ipaddress:port branch-2... \n");
     exit(0);
 }
 
@@ -34,9 +37,15 @@ void set_sockaddr_in(const char* hostname, unsigned short portno, struct sockadd
     sa->sin_port = htons(portno);
 }
 
-int branchsocket() {
-    int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sockfd < 0) error("ERROR opening socket");
+int branchsocket(int spoof) {
+    int sockfd = -1;
+    if (spoof) {
+        sockfd = make_raw_udp_socket(-1, AF_INET);
+        if (sockfd < 0) error("raw socket");
+    } else {
+        sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+        if (sockfd < 0) error("socket");
+    }
     return sockfd;
 }
 
@@ -78,18 +87,27 @@ void parse_host_port(const char* arg, char* host, unsigned short* port) {
     *port = (unsigned short) atoi(bufport);
 }
 
-void initialize(int ac, const char* av[], struct variables* ctx) {
+void initialize(int ac, char* av[], struct variables* ctx) {
     memset(ctx, 0, sizeof(struct variables));
-    parse_host_port(av[1], ctx->selfhost, &(ctx->selfport));
+    av++;
 
-    for (int i=2; i < ac; i++) {
+    for (;*av != NULL && **av == '-'; av++) {
+        if (strcmp(*av, "-s")==0) ctx->spoof = 1;
+    }
+
+    if (*av == NULL) usage();
+
+    parse_host_port((const char*) *av, ctx->selfhost, &(ctx->selfport));
+
+    av++;
+    ctx->branchnum = 0;
+    for (int i = 0; *av != NULL; ctx->branchnum++, av++, i++) {
         char h[128];
         unsigned short p;
-        parse_host_port(av[i], h, &p);
-        set_sockaddr_in(h, p, &(ctx->branch_s_addr[i-2]));
-        strcpy(ctx->branch_hostargs[i-2], av[i]);
+        parse_host_port((const char*) *av, h, &p);
+        set_sockaddr_in(h, p, &(ctx->branch_s_addr[i]));
+        strcpy(ctx->branch_hostargs[i], *av);
     }
-    ctx->branchnum = ac - 2;
 
 	ctx->socketbuflen = SOCKETBUFLEN;
     ctx->sockfd = -1;
@@ -156,7 +174,7 @@ static inline int getbranchindex(struct sockaddr_in* t, struct variables* ctx) {
     }
     for (int i = 0; i < CONNUM; i++) {
         if (ctx->branchfd[i] == -1) {
-            ctx->branchfd[i] = branchsocket();
+            ctx->branchfd[i] = branchsocket(ctx->spoof);
             int newindex = newbranchindex(ctx, i);
             ctx->branchaddr[i] = ctx->branch_s_addr[newindex];
             ctx->caddr[i] = *t;
@@ -235,27 +253,34 @@ void process(struct variables* ctx) {
                 printf("failed get branch-index corresponding to client\n");
 #endif
                 ctx->failed_assign++;
-            } else {
-                if (sendto(ctx->branchfd[branchidx], buffer, len, 0,
-                           (struct sockaddr*) &(ctx->branchaddr[branchidx]),
-                           sizeof(ctx->branchaddr[branchidx])) < 0) {
+			} else if (ctx->spoof) {
+                if (raw_send_from_to(ctx->branchfd[branchidx], buffer, len,
+                                    (struct sockaddr*) &t,
+                                    (struct sockaddr*) &(ctx->branchaddr[branchidx]), 63, 1)<0) {
+#if DEBUG
+                    printf("failed to send raw packet to boss\n");
+#endif
+                    ctx->error_sendto++;
+}
+            } else if (sendto(ctx->branchfd[branchidx], buffer, len, 0,
+                              (struct sockaddr*) &(ctx->branchaddr[branchidx]),
+                              sizeof(ctx->branchaddr[branchidx])) < 0) {
 #if DEBUG
                     printf("failed to send to boss\n");
 #endif
                     ctx->error_sendto++;
                 }
-            }
         }
     }
 }
 
-int main(int ac, const char** av) {
+int main(int ac, char** av) {
     struct variables ctx;
 
     if (ac <3) usage(); // and exit
 
     initialize(ac, av, &ctx);
-    printf("forwarding port=%d\n", ctx.selfport);
+    printf("accepting port=%d %s\n", ctx.selfport, ctx.spoof ? "with nat" : "");
     for (int i=0; i < ctx.branchnum; i++) {
         printf("branch[%d]=%s\n", i, ctx.branch_hostargs[i]);
     }
