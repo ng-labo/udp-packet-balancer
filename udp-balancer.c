@@ -11,6 +11,8 @@
 extern int raw_send_from_to(int s, const void* msg, size_t msglen, struct sockaddr* saddr_generic, struct sockaddr* daddr_generic, int ttl, int flags);
 extern int make_raw_udp_socket(size_t socketbuflen, int af);
 
+static int newbranchindex_naive(struct variables*, int);
+
 void usage() {
     fprintf(stderr, "udp-balancer [-s] accpter-ipaddress:port branch-1-ipaddress:port branch-2... \n");
     exit(0);
@@ -95,6 +97,8 @@ void initialize(int ac, char* av[], struct variables* ctx) {
         if (strcmp(*av, "-s")==0) ctx->spoof = 1;
     }
 
+    ctx->newbranchindex = &newbranchindex_naive;
+
     if (*av == NULL) usage();
 
     parse_host_port((const char*) *av, ctx->selfhost, &(ctx->selfport));
@@ -109,13 +113,13 @@ void initialize(int ac, char* av[], struct variables* ctx) {
         strcpy(ctx->branch_hostargs[i], *av);
     }
 
-	ctx->socketbuflen = SOCKETBUFLEN;
+    ctx->socketbuflen = SOCKETBUFLEN;
     ctx->sockfd = -1;
-    setzero_sockaddr_in(&(ctx->selfaddr));
+    // setzero_sockaddr_in(&(ctx->selfaddr));
     for (int i = 0; i < CONNUM; i++) {
-        setzero_sockaddr_in(&(ctx->caddr[i]));
         ctx->branchfd[i] = -1;
-        setzero_sockaddr_in(&(ctx->branchaddr[i]));
+        // setzero_sockaddr_in(&(ctx->caddr[i]));
+        // setzero_sockaddr_in(&(ctx->branchaddr[i]));
     }
 }
 
@@ -148,7 +152,7 @@ static inline int nfds(struct variables *ctx) {
     return (ret + 1);
 }
 
-static inline int newbranchindex(struct variables* ctx, int connindex) {
+static inline int newbranchindex_naive(struct variables* ctx, int connindex) {
     return connindex % ctx->branchnum;
 }
 
@@ -175,7 +179,7 @@ static inline int getbranchindex(struct sockaddr_in* t, struct variables* ctx) {
     for (int i = 0; i < CONNUM; i++) {
         if (ctx->branchfd[i] == -1) {
             ctx->branchfd[i] = branchsocket(ctx->spoof);
-            int newindex = newbranchindex(ctx, i);
+            int newindex = ctx->newbranchindex(ctx, i);
             ctx->branchaddr[i] = ctx->branch_s_addr[newindex];
             ctx->caddr[i] = *t;
 

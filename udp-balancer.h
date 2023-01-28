@@ -19,6 +19,8 @@ struct variables {
     enum selectmethod method; // reserved
     int socketbuflen;
 
+    int (*newbranchindex)(struct variables*, int);
+
     int branchnum;
     char branch_hostargs[BRANCHNUMMAX][80]; // keep from argument
     struct sockaddr_in branch_s_addr[BRANCHNUMMAX]; // caching when initializing
