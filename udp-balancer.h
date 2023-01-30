@@ -7,17 +7,20 @@
 
 #define PACKETBUFLEN 1518
 
-#define CONNUM 10
-#define BRANCHNUMMAX 3
+#define CONNUM 16
+#define BRANCHNUMMAX 2
 #define SOCKETBUFLEN 1048576
+
+#define FORGETTING_IN_SEC 60
 
 enum selectmethod { rotation, leastconn };
 
 struct variables {
     // setting and derived
-    int spoof; // reserved
-    enum selectmethod method; // reserved
+    int spoof;
+    enum selectmethod method;
     int socketbuflen;
+    int verbose;
 
     int (*newbranchindex)(struct variables*, int);
 
@@ -40,6 +43,7 @@ struct variables {
     int activecount[BRANCHNUMMAX];
     
     // statistics counter
+    unsigned long new_connection;
     unsigned long error_recvfrom;
     unsigned long error_sendto;
     unsigned long failed_assign;
