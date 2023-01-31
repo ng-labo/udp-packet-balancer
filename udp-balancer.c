@@ -88,6 +88,7 @@ void parse_host_port(const char* arg, char* host, unsigned short* port) {
         error("couldnt read ip-address:port");
     }
     if (strlen(bufhost)==0) {
+        strcpy(bufhost, "127.0.0.1");
     }
     strcpy(host, bufhost);
     *port = (unsigned short) atoi(bufport);
@@ -280,23 +281,23 @@ void process(struct variables* ctx) {
                 printf("failed get branch-index corresponding to client\n");
 #endif
                 ctx->failed_assign++;
-			} else if (ctx->spoof) {
+            } else if (ctx->spoof) {
                 if (raw_send_from_to(ctx->branchfd[branchidx], buffer, len,
                                     (struct sockaddr*) &t,
                                     (struct sockaddr*) &(ctx->branchaddr[branchidx]), 63, 1) < 0) {
 #if DEBUG
-                    printf("failed to send raw packet to boss\n");
+                    printf("failed to send raw packet to branch[%d]\n", branchidx);
 #endif
                     ctx->error_sendto++;
-}
+                }
             } else if (sendto(ctx->branchfd[branchidx], buffer, len, 0,
                               (struct sockaddr*) &(ctx->branchaddr[branchidx]),
                               sizeof(ctx->branchaddr[branchidx])) < 0) {
 #if DEBUG
-                    printf("failed to send to boss\n");
+                printf("failed to send raw packet to branch[%d]\n", branchidx);
 #endif
-                    ctx->error_sendto++;
-                }
+                ctx->error_sendto++;
+            }
         }
     }
 }
