@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <time.h>
+#include <arpa/inet.h>
 #include "udp-balancer.h"
 
 extern int raw_send_from_to(int s, const void* msg, size_t msglen, struct sockaddr* saddr, struct sockaddr* daddr, int ttl, int flags);
@@ -63,35 +64,53 @@ void parse_host_port(const char* arg, char* host, unsigned short* port) {
 
     char bufhost[64], bufport[64];
     const char *a = arg;
-    char *h = bufhost;
-    char *p = bufport;
+    char *n = bufhost;
 
-    int notfound = 1;
-    *h = '\0';;
-    *p = '\0';;
+    bufhost[0] = '\0';
+    bufport[0] = '\0';
+    char w = ':';
+    if (*a == '[') {
+        w = ']';
+        a++;
+    }
     while (*a != '\0') {
-        if (*a == ':') {
-            notfound = 0;
+        if (*a == w) {
+            if (w == ']') {
+                if (*(a + 1) != ':') break;
+                a++;
+            }
+            n = bufport;
             a++;
             continue;
         }
-        if (notfound == 1) {
-            *h++ = *a;
-            *h = '\0';
-        } else {
-            *p++ = *a;
-            *p = '\0';
+        if (n != NULL) {
+            *n++ = *a;
+            *n = '\0';
         }
         a++;
     }
-    if (notfound==1) {
-        error("couldnt read ip-address:port");
-    }
-    if (strlen(bufhost)==0) {
-        strcpy(bufhost, "127.0.0.1");
-    }
+
     strcpy(host, bufhost);
     *port = (unsigned short) atoi(bufport);
+    if (*port == 0) {
+        error("Invalid port number");
+    }
+
+}
+
+int ipver(const char* host, unsigned char* buf) {
+    int i4 = inet_pton(AF_INET, host, buf);
+    int i6 = inet_pton(AF_INET6, host, buf);
+    if (i4 == 1) return AF_INET;
+    else if (i6 == 1) return AF_INET6;
+    /*
+    struct hostent *he = gethostbyname(host);
+    if (he == NULL) {
+        fprintf(stderr,"ERROR, no such host as %s\n", bufhost);
+        exit(1);
+    }
+    */
+    return -1;
 }
 
 void initialize(int ac, char* av[], struct variables* ctx) {
@@ -109,7 +128,6 @@ void initialize(int ac, char* av[], struct variables* ctx) {
         }
     }
 
-
     if (*av == NULL) usage();
 
     parse_host_port((const char*) *av, ctx->selfhost, &(ctx->selfport));
@@ -120,6 +138,7 @@ void initialize(int ac, char* av[], struct variables* ctx) {
         char h[128];
         unsigned short p;
         parse_host_port((const char*) *av, h, &p);
+        if (strlen(h) == 0) strcpy(h, "127.0.0.1");
         set_sockaddr_in(h, p, &(ctx->branch_s_addr[i]));
         strcpy(ctx->branch_hostargs[i], *av);
     }
@@ -136,15 +155,53 @@ void initialize(int ac, char* av[], struct variables* ctx) {
 
 int init_acceptor(struct variables *ctx) {
     int optval = 1;
-    ctx->sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (ctx->sockfd < 0) error("socket");
-    setsockopt(ctx->sockfd, SOL_SOCKET, SO_REUSEADDR, (const void *) &optval, sizeof(int));
+    if (strlen(ctx->selfhost)==0) {
+        char service[64];
+        struct addrinfo hints, *res;
+        memset(&hints, 0, sizeof(hints));
+        snprintf(service, 64, "%d", ctx->selfport);
 
-    ctx->selfaddr.sin_family = AF_INET;
-    ctx->selfaddr.sin_addr.s_addr = htonl(INADDR_ANY);
-    ctx->selfaddr.sin_port = htons((unsigned short) ctx->selfport);
+        //hints.ai_family = AF_INET6;
+        hints.ai_family = AF_INET;
+        hints.ai_flags = AI_PASSIVE;
+        hints.ai_socktype = SOCK_DGRAM;
+        if (getaddrinfo(NULL, service, &hints, &res) != 0) {
+            error("getaddrinfo");
+        }
 
-    if (bind(ctx->sockfd, (struct sockaddr*) &ctx->selfaddr, sizeof(ctx->selfaddr)) < 0) error("bind");
+        ctx->sockfd = socket(res->ai_family, res->ai_socktype, 0);
+        if (ctx->sockfd < 0) error("socket");
+        setsockopt(ctx->sockfd, SOL_SOCKET, SO_REUSEADDR, (const void *) &optval, sizeof(int));
+
+        if (res->ai_family == AF_INET) {
+            memcpy((void*) &(ctx->selfaddr), (void*) res->ai_addr, res->ai_addrlen);
+        } else {
+        }
+        freeaddrinfo(res);
+
+        if (bind(ctx->sockfd, (struct sockaddr*) &ctx->selfaddr, sizeof(struct sockaddr)) < 0) error("bind");
+
+    } else {
+        unsigned char buf[sizeof(struct in6_addr)];
+        int af = ipver(ctx->selfhost, buf);
+        if (af == -1) error("inet_pton");
+        if (af == AF_INET6) {
+            error("not implemented");
+        }
+
+        ctx->sockfd = socket(af, SOCK_DGRAM, 0);
+        if (ctx->sockfd < 0) error("socket");
+        setsockopt(ctx->sockfd, SOL_SOCKET, SO_REUSEADDR, (const void *) &optval, sizeof(int));
+
+        ctx->selfaddr.sin_family = af;
+        size_t sz = sizeof(struct in_addr);
+        memcpy((void*) &(ctx->selfaddr.sin_addr), (void*) buf, sz);
+
+        ctx->selfaddr.sin_port = htons((unsigned short) ctx->selfport);
+
+        if (bind(ctx->sockfd, (struct sockaddr*) &(ctx->selfaddr),
+                 sizeof(ctx->selfaddr)) < 0) error("bind(4)");
+    }
 
     return 0;
 }
