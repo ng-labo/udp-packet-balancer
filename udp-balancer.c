@@ -149,7 +149,7 @@ void initialize(int ac, char* av[], struct variables* ctx) {
     ctx->selfaddr = (struct sockaddr*) &ctx->selfaddr_buf;
     // setzero_sockaddr_in(&(ctx->selfaddr));
     for (int i = 0; i < CONNUM; i++) {
-        ctx->client[i].fd = -1;
+        ctx->brokers[i].fd = -1;
         // setzero_sockaddr_in(&(ctx->caddr[i]));
         // setzero_sockaddr_in(&(ctx->branchaddr[i]));
     }
@@ -202,10 +202,10 @@ int init_acceptor(struct variables *ctx) {
 
 static inline int nfds(struct variables *ctx) {
     int ret = -1;
-    struct client* clientp = ctx->client;
-    for (int i = 0; i < CONNUM; i++, clientp++) {
-        if (clientp->fd >= 0 && clientp->fd > ret) {
-            ret = clientp->fd;
+    struct client* p = ctx->brokers;
+    for (int i = 0; i < CONNUM; i++, p++) {
+        if (p->fd >= 0 && p->fd > ret) {
+            ret = p->fd;
         }
     }
     if (ctx->sockfd > ret) {
@@ -231,37 +231,44 @@ static inline int newbranchindex_leastbranch(struct variables* ctx, int ignore) 
 }
 
 static inline int getbranchindex(struct sockaddr_in* t, struct variables* ctx) {
+    struct client *cp;
+
     time_t now = time(NULL);
-    for (int i = 0; i < CONNUM; i++) {
-        if(ctx->client[i].caddr.sin_port == t->sin_port &&
-           ctx->client[i].caddr.sin_addr.s_addr == t->sin_addr.s_addr) {
-            ctx->client[i].lasttscon = now;
+    cp = ctx->brokers;
+    for (int i = 0; i < CONNUM; i++, cp++) {
+        if(cp->caddr.sin_port == t->sin_port &&
+           cp->caddr.sin_addr.s_addr == t->sin_addr.s_addr) {
+            cp->lasttscon = now;
             return i;
         }
     }
+
     time_t l = now - FORGETTING_IN_SEC;
-    for (int i = 0; i < CONNUM; i++) {
-        if (ctx->client[i].lasttscon > 0 && ctx->client[i].fd > -1 && ctx->client[i].lasttscon < l) {
-            if (ctx->verbose) printf("close branchfd[%d]=%d\n", i, ctx->client[i].fd);
-            close(ctx->client[i].fd);
-            ctx->client[i].fd = -1;
-            ctx->client[i].lasttscon = 0;
-            setzero_sockaddr_in(&(ctx->client[i].caddr));
-            ctx->branch[ctx->client[i].branchindexinconn].activecount--;
-            // ctx->branchindexinconn[i] = -1
+    cp = ctx->brokers;
+    for (int i = 0; i < CONNUM; i++, cp++) {
+        if (cp->lasttscon > 0 && cp->fd > -1 && cp->lasttscon < l) {
+            if (ctx->verbose) printf("close branchfd[%d]=%d\n", i, cp->fd);
+            close(cp->fd);
+            cp->fd = -1;
+            cp->lasttscon = 0;
+            setzero_sockaddr_in(&(cp->caddr));
+            ctx->branch[cp->connindex].activecount--;
+            // ctx->connindex[i] = -1
         }
     }
-    for (int i = 0; i < CONNUM; i++) {
-        if (ctx->client[i].fd == -1) {
-            ctx->client[i].fd = branchsocket(ctx->spoof);
-            int newindex = ctx->newbranchindex(ctx, i);
-            ctx->client[i].branchaddr = ctx->branch[newindex].s_addr;
-            ctx->client[i].caddr = *t;
 
-            ctx->client[i].branchindexinconn = newindex;
+    cp = ctx->brokers;
+    for (int i = 0; i < CONNUM; i++, cp++) {
+        if (cp->fd == -1) {
+            cp->fd = branchsocket(ctx->spoof);
+            int newindex = ctx->newbranchindex(ctx, i);
+            //ctx->brokers[i].branchaddr = &(ctx->branch[newindex].s_addr);
+            cp->caddr = *t;
+
+            cp->connindex = newindex;
             ctx->branch[newindex].activecount++;
 
-            if (ctx->verbose) printf("assign branchfd[%d]=%d\n", i, ctx->client[i].fd);
+            if (ctx->verbose) printf("assign branchfd[%d]=%d\n", i, cp->fd);
 
             return i;
         }
@@ -276,7 +283,7 @@ void process(struct variables* ctx) {
         FD_ZERO(&rset);
         FD_SET(ctx->sockfd, &rset);
         for (int i = 0; i < CONNUM; i++) {
-            if (ctx->client[i].fd >= 0) FD_SET(ctx->client[i].fd, &rset);
+            if (ctx->brokers[i].fd >= 0) FD_SET(ctx->brokers[i].fd, &rset);
         }
 
         if (select(nfds(ctx), &rset, NULL, NULL, NULL) < 0) {
@@ -285,7 +292,7 @@ void process(struct variables* ctx) {
 
         for (int i = 0; i < CONNUM; i++) {
             // socket corresponding for branch-i
-            int fd = ctx->client[i].fd;
+            int fd = ctx->brokers[i].fd;
             if (fd < 0) continue;
             if (!FD_ISSET(fd, &rset)) continue;
             // this is a signaled fd.
@@ -301,7 +308,7 @@ void process(struct variables* ctx) {
             }
             // relay to client i.
             if (sendto(ctx->sockfd, (const char*) buffer, len, 0,
-                       (struct sockaddr*) &(ctx->client[i].caddr), sizeof(ctx->client[i].caddr)) < 0) {
+                       (struct sockaddr*) &(ctx->brokers[i].caddr), sizeof(ctx->brokers[i].caddr)) < 0) {
 #if DEBUG
                 printf("failed to sendto client for (i=%d, fd=%d)\n", i, fd);
 #endif
@@ -334,17 +341,17 @@ void process(struct variables* ctx) {
 #endif
                 ctx->failed_assign++;
             } else if (ctx->spoof) {
-                if (raw_send_from_to(ctx->client[branchidx].fd, buffer, len,
+                if (raw_send_from_to(ctx->brokers[branchidx].fd, buffer, len,
                                     (struct sockaddr*) &t,
-                                    (struct sockaddr*) &(ctx->client[branchidx].branchaddr), 63, 1) < 0) {
+                                    (struct sockaddr*) &(ctx->branch[ctx->brokers[branchidx].connindex].s_addr), 63, 1) < 0) {
 #if DEBUG
                     printf("failed to send raw packet to branch[%d]\n", branchidx);
 #endif
                     ctx->error_sendto++;
                 }
-            } else if (sendto(ctx->client[branchidx].fd, buffer, len, 0,
-                              (struct sockaddr*) &(ctx->client[branchidx].branchaddr),
-                              sizeof(ctx->client[branchidx].branchaddr)) < 0) {
+            } else if (sendto(ctx->brokers[branchidx].fd, buffer, len, 0,
+                              (struct sockaddr*) &(ctx->branch[ctx->brokers[branchidx].connindex].s_addr),
+                              sizeof(struct sockaddr)) < 0) {
 #if DEBUG
                 printf("failed to send udp packet to branch[%d]\n", branchidx);
 #endif

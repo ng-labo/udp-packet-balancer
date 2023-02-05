@@ -23,11 +23,10 @@ struct branch {
 };
 
 struct client {
-    int fd; // to branch
+    int fd; // to branch socket
     struct sockaddr_in caddr;
-    struct sockaddr_in branchaddr;
     time_t lasttscon;
-    int branchindexinconn;
+    int connindex;;
 };
     
 struct variables {
@@ -51,7 +50,7 @@ struct variables {
     size_t selfaddrlen;
     struct sockaddr_in6 selfaddr_buf; // as longer size structure
 
-    struct client client[CONNUM];
+    struct client brokers[CONNUM];
     
     // statistics counter
     unsigned long new_connection;
