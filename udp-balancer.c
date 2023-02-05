@@ -15,7 +15,6 @@ extern int make_raw_udp_socket(size_t socketbuflen, int af);
 static int newbranchindex_naive(struct variables*, int);
 static int newbranchindex_leastbranch(struct variables*, int);
 
-#define DEBUG 1
 void usage() {
     fprintf(stderr, "udp-balancer [options] accpter-ipaddress:port branch-1-ipaddress:port branch-2... \n");
     fprintf(stderr, "    -v : print information in processing\n");
@@ -29,8 +28,8 @@ void error(const char *msg) {
     exit(1);
 }
 
-void setzero_sockaddr_in(struct sockaddr_in* c) {
-    memset(c, sizeof(struct sockaddr_in) , 0);
+void setzero_sockaddr(struct sockaddr* c) {
+    memset(c, (c->sa_family == AF_INET) ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6) , 0);
 }
 
 void set_sockaddr_in(const char* hostname, unsigned short portno, struct sockaddr_in* sa) {
@@ -39,7 +38,7 @@ void set_sockaddr_in(const char* hostname, unsigned short portno, struct sockadd
         fprintf(stderr,"ERROR, no such host as %s\n", hostname);
         exit(1);
     }
-    setzero_sockaddr_in(sa);
+    setzero_sockaddr((struct sockaddr*) sa);
     sa->sin_family = AF_INET;
     memcpy((char*) &(sa->sin_addr.s_addr), (char*) server->h_addr, server->h_length);
     sa->sin_port = htons(portno);
@@ -147,11 +146,9 @@ void initialize(int ac, char* av[], struct variables* ctx) {
     ctx->socketbuflen = SOCKETBUFLEN;
     ctx->sockfd = -1;
     ctx->selfaddr = (struct sockaddr*) &ctx->selfaddr_buf;
-    // setzero_sockaddr_in(&(ctx->selfaddr));
     for (int i = 0; i < CONNUM; i++) {
         ctx->brokers[i].fd = -1;
-        // setzero_sockaddr_in(&(ctx->caddr[i]));
-        // setzero_sockaddr_in(&(ctx->branchaddr[i]));
+        ctx->brokers[i].caddr = (struct sockaddr*) &ctx->brokers[i].caddr_buf;
     }
 }
 
@@ -230,16 +227,34 @@ static inline int newbranchindex_leastbranch(struct variables* ctx, int ignore) 
     return index;
 }
 
-static inline int getbranchindex(struct sockaddr_in* t, struct variables* ctx) {
+static inline int getbranchindex(struct sockaddr* t, struct variables* ctx) {
     struct client *cp;
 
     time_t now = time(NULL);
     cp = ctx->brokers;
-    for (int i = 0; i < CONNUM; i++, cp++) {
-        if(cp->caddr.sin_port == t->sin_port &&
-           cp->caddr.sin_addr.s_addr == t->sin_addr.s_addr) {
-            cp->lasttscon = now;
-            return i;
+    if (t->sa_family == AF_INET) {
+        struct sockaddr_in *t4 = (struct sockaddr_in*) t;
+        for (int i = 0; i < CONNUM; i++, cp++) {
+            struct sockaddr_in *cp4 = (struct sockaddr_in*) cp->caddr;
+            if(cp4->sin_port == t4->sin_port &&
+               cp4->sin_addr.s_addr == t4->sin_addr.s_addr) {
+                cp->lasttscon = now;
+                return i;
+            }
+        }
+    } else if (t->sa_family == AF_INET6) {
+        struct sockaddr_in6 *t6 = (struct sockaddr_in6*) t;
+        for (int i = 0; i < CONNUM; i++, cp++) {
+            struct sockaddr_in6 *cp6 = (struct sockaddr_in6*) cp->caddr;
+            if(cp6->sin6_port == t6->sin6_port &&
+               cp6->sin6_addr.__in6_u.__u6_addr32[0] == t6->sin6_addr.__in6_u.__u6_addr32[0] &&
+               cp6->sin6_addr.__in6_u.__u6_addr32[1] == t6->sin6_addr.__in6_u.__u6_addr32[1] &&
+               cp6->sin6_addr.__in6_u.__u6_addr32[2] == t6->sin6_addr.__in6_u.__u6_addr32[2] &&
+               cp6->sin6_addr.__in6_u.__u6_addr32[3] == t6->sin6_addr.__in6_u.__u6_addr32[3]) { 
+               //memcmp(&(cp6->sin6_addr.__in6_u), &(t6->sin6_addr.__in6_u), 16)==0) {
+                cp->lasttscon = now;
+                return i;
+            }
         }
     }
 
@@ -247,11 +262,12 @@ static inline int getbranchindex(struct sockaddr_in* t, struct variables* ctx) {
     cp = ctx->brokers;
     for (int i = 0; i < CONNUM; i++, cp++) {
         if (cp->lasttscon > 0 && cp->fd > -1 && cp->lasttscon < l) {
-            if (ctx->verbose) printf("close branchfd[%d]=%d\n", i, cp->fd);
+            if (ctx->verbose) printf("close branch[%d].fd=%d\n", i, cp->fd);
             close(cp->fd);
             cp->fd = -1;
             cp->lasttscon = 0;
-            setzero_sockaddr_in(&(cp->caddr));
+            setzero_sockaddr(cp->caddr);
+            cp->caddrlen = 0;
             ctx->branch[cp->connindex].activecount--;
             // ctx->connindex[i] = -1
         }
@@ -262,13 +278,13 @@ static inline int getbranchindex(struct sockaddr_in* t, struct variables* ctx) {
         if (cp->fd == -1) {
             cp->fd = branchsocket(ctx->spoof);
             int newindex = ctx->newbranchindex(ctx, i);
-            //ctx->brokers[i].branchaddr = &(ctx->branch[newindex].s_addr);
-            cp->caddr = *t;
+            cp->caddrlen = (t->sa_family == AF_INET) ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
+            memcpy(cp->caddr, t, cp->caddrlen);
 
             cp->connindex = newindex;
             ctx->branch[newindex].activecount++;
 
-            if (ctx->verbose) printf("assign branchfd[%d]=%d\n", i, cp->fd);
+            if (ctx->verbose) printf("assign branch[%d].fd=%d\n", i, cp->fd);
 
             return i;
         }
@@ -308,7 +324,7 @@ void process(struct variables* ctx) {
             }
             // relay to client i.
             if (sendto(ctx->sockfd, (const char*) buffer, len, 0,
-                       (struct sockaddr*) &(ctx->brokers[i].caddr), sizeof(ctx->brokers[i].caddr)) < 0) {
+                       ctx->brokers[i].caddr, ctx->brokers[i].caddrlen) < 0) {
 #if DEBUG
                 printf("failed to sendto client for (i=%d, fd=%d)\n", i, fd);
 #endif
@@ -317,9 +333,11 @@ void process(struct variables* ctx) {
         }
 
         if (FD_ISSET(ctx->sockfd, &rset)) {
-            struct sockaddr_in t;
-            int sz = sizeof(t);
-            int len = recvfrom(ctx->sockfd, buffer, sizeof(buffer), 0, (struct sockaddr*) &t, &sz);
+            struct sockaddr* t;
+            unsigned char tbuf[sizeof(struct sockaddr_in6)];
+            t = (struct sockaddr*) tbuf;
+            int sz = sizeof(tbuf);
+            int len = recvfrom(ctx->sockfd, buffer, sizeof(buffer), 0, t, &sz);
             if (len < 0) {
 #if DEBUG
                 printf("failed to recvfrom from client in accepting socket\n");
@@ -327,23 +345,22 @@ void process(struct variables* ctx) {
                 ctx->error_recvfrom++;
             }
 #if DEBUG
-            printf("Message from UDP client: len=%d (S_addr=%d port=%d)\n", len, t.sin_addr.s_addr,t.sin_port);
+            printf("Message from UDP client: len=%d sa_family=%d)\n", len, t->sa_family);
 #endif
 
-            int branchidx = getbranchindex(&t, ctx);
+            int branchidx = getbranchindex(t, ctx);
             ctx->new_connection++;
 #if DEBUG
             printf("getbranchindex=%d\n", branchidx);
 #endif
             if (branchidx < 0) {
 #if DEBUG
-                printf("failed get branch-index corresponding to client\n");
+                printf("failed get branch-index corresponding to client packet\n");
 #endif
                 ctx->failed_assign++;
             } else if (ctx->spoof) {
                 if (raw_send_from_to(ctx->brokers[branchidx].fd, buffer, len,
-                                    (struct sockaddr*) &t,
-                                    (struct sockaddr*) &(ctx->branch[ctx->brokers[branchidx].connindex].s_addr), 63, 1) < 0) {
+                                     t, (struct sockaddr*) &(ctx->branch[ctx->brokers[branchidx].connindex].s_addr), 63, 1) < 0) {
 #if DEBUG
                     printf("failed to send raw packet to branch[%d]\n", branchidx);
 #endif

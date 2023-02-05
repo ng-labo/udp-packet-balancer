@@ -17,14 +17,15 @@ enum selectmethod { rotation, leastconn };
 
 struct branch {
     char hostargs[80];
-    //int af;
     struct sockaddr_in s_addr;
     int activecount;
 };
 
 struct client {
     int fd; // to branch socket
-    struct sockaddr_in caddr;
+    struct sockaddr* caddr;
+    size_t caddrlen;
+    struct sockaddr_in6 caddr_buf; // as longer size structure
     time_t lasttscon;
     int connindex;;
 };
