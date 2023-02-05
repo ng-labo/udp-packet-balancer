@@ -36,4 +36,4 @@ $ make
 - ~enable multi server host(multi address)~
 - spoofing source address in udp-balancer(source nat)
 - to be selective some balancing algorithm
-- ipv6 available(when not nat)
+- ipv6 available(client side when not nat)

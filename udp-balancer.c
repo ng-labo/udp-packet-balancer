@@ -15,6 +15,7 @@ extern int make_raw_udp_socket(size_t socketbuflen, int af);
 static int newbranchindex_naive(struct variables*, int);
 static int newbranchindex_leastbranch(struct variables*, int);
 
+#define DEBUG 1
 void usage() {
     fprintf(stderr, "udp-balancer [options] accpter-ipaddress:port branch-1-ipaddress:port branch-2... \n");
     fprintf(stderr, "    -v : print information in processing\n");
@@ -139,15 +140,16 @@ void initialize(int ac, char* av[], struct variables* ctx) {
         unsigned short p;
         parse_host_port((const char*) *av, h, &p);
         if (strlen(h) == 0) strcpy(h, "127.0.0.1");
-        set_sockaddr_in(h, p, &(ctx->branch_s_addr[i]));
-        strcpy(ctx->branch_hostargs[i], *av);
+        set_sockaddr_in(h, p, &(ctx->branch[i].s_addr));
+        strcpy(ctx->branch[i].hostargs, *av);
     }
 
     ctx->socketbuflen = SOCKETBUFLEN;
     ctx->sockfd = -1;
+    ctx->selfaddr = (struct sockaddr*) &ctx->selfaddr_buf;
     // setzero_sockaddr_in(&(ctx->selfaddr));
     for (int i = 0; i < CONNUM; i++) {
-        ctx->branchfd[i] = -1;
+        ctx->client[i].fd = -1;
         // setzero_sockaddr_in(&(ctx->caddr[i]));
         // setzero_sockaddr_in(&(ctx->branchaddr[i]));
     }
@@ -155,62 +157,55 @@ void initialize(int ac, char* av[], struct variables* ctx) {
 
 int init_acceptor(struct variables *ctx) {
     int optval = 1;
-    if (strlen(ctx->selfhost)==0) {
-        char service[64];
-        struct addrinfo hints, *res;
-        memset(&hints, 0, sizeof(hints));
-        snprintf(service, 64, "%d", ctx->selfport);
+    char service[64];
+    struct addrinfo hints, *res;
+    memset(&hints, 0, sizeof(hints));
+    snprintf(service, 64, "%d", ctx->selfport);
 
-        //hints.ai_family = AF_INET6;
-        hints.ai_family = AF_INET;
-        hints.ai_flags = AI_PASSIVE;
-        hints.ai_socktype = SOCK_DGRAM;
-        if (getaddrinfo(NULL, service, &hints, &res) != 0) {
-            error("getaddrinfo");
-        }
-
-        ctx->sockfd = socket(res->ai_family, res->ai_socktype, 0);
-        if (ctx->sockfd < 0) error("socket");
-        setsockopt(ctx->sockfd, SOL_SOCKET, SO_REUSEADDR, (const void *) &optval, sizeof(int));
-
-        if (res->ai_family == AF_INET) {
-            memcpy((void*) &(ctx->selfaddr), (void*) res->ai_addr, res->ai_addrlen);
-        } else {
-        }
-        freeaddrinfo(res);
-
-        if (bind(ctx->sockfd, (struct sockaddr*) &ctx->selfaddr, sizeof(struct sockaddr)) < 0) error("bind");
-
-    } else {
-        unsigned char buf[sizeof(struct in6_addr)];
+    char *node = NULL;
+    hints.ai_family = AF_INET6;
+    if (strlen(ctx->selfhost) != 0) {
+        unsigned char buf[sizeof(struct sockaddr_in6)];
         int af = ipver(ctx->selfhost, buf);
-        if (af == -1) error("inet_pton");
-        if (af == AF_INET6) {
-            error("not implemented");
+        if (af == AF_INET) {
+            node = ctx->selfhost;
+            hints.ai_family = AF_INET;
+        } else if (af == AF_INET6) {
+            node = ctx->selfhost;
+            hints.ai_family = AF_INET6;
+        } else {
+            error("invalid host");
         }
-
-        ctx->sockfd = socket(af, SOCK_DGRAM, 0);
-        if (ctx->sockfd < 0) error("socket");
-        setsockopt(ctx->sockfd, SOL_SOCKET, SO_REUSEADDR, (const void *) &optval, sizeof(int));
-
-        ctx->selfaddr.sin_family = af;
-        size_t sz = sizeof(struct in_addr);
-        memcpy((void*) &(ctx->selfaddr.sin_addr), (void*) buf, sz);
-
-        ctx->selfaddr.sin_port = htons((unsigned short) ctx->selfport);
-
-        if (bind(ctx->sockfd, (struct sockaddr*) &(ctx->selfaddr),
-                 sizeof(ctx->selfaddr)) < 0) error("bind(4)");
     }
+    hints.ai_flags = AI_PASSIVE;
+    hints.ai_socktype = SOCK_DGRAM;
+    if (getaddrinfo(NULL, service, &hints, &res) != 0) {
+        error("getaddrinfo");
+    }
+#if DEBUG
+        printf("res->ai_addrlen=%d\n",res->ai_addrlen);
+#endif
+
+    ctx->sockfd = socket(res->ai_family, res->ai_socktype, 0);
+    if (ctx->sockfd < 0) error("socket");
+    setsockopt(ctx->sockfd, SOL_SOCKET, SO_REUSEADDR, (const void *) &optval, sizeof(int));
+
+    memcpy((void*) ctx->selfaddr, (void*) res->ai_addr, res->ai_addrlen);
+    ctx->selfaddrlen = res->ai_addrlen;
+
+    freeaddrinfo(res);
+
+    if (bind(ctx->sockfd, ctx->selfaddr, ctx->selfaddrlen) < 0) error("bind");
 
     return 0;
 }
 
 static inline int nfds(struct variables *ctx) {
     int ret = -1;
-    for (int i = 0; i < CONNUM; i++) {
-        if (ctx->branchfd[i] >= 0 && ctx->branchfd[i] > ret) {
-            ret = ctx->branchfd[i];
+    struct client* clientp = ctx->client;
+    for (int i = 0; i < CONNUM; i++, clientp++) {
+        if (clientp->fd >= 0 && clientp->fd > ret) {
+            ret = clientp->fd;
         }
     }
     if (ctx->sockfd > ret) {
@@ -224,11 +219,11 @@ static inline int newbranchindex_naive(struct variables* ctx, int ignore) {
 }
 
 static inline int newbranchindex_leastbranch(struct variables* ctx, int ignore) {
-    int cont =ctx->activecount[0];
+    int cont =ctx->branch[0].activecount;
     int index = 0;
     for (int i = 1; i < ctx->branchnum; i++) {
-        if (ctx->activecount[i] < cont) {
-            cont = ctx->activecount[i];
+        if (ctx->branch[i].activecount < cont) {
+            cont = ctx->branch[i].activecount;
             index = i;
         }
     }
@@ -238,35 +233,35 @@ static inline int newbranchindex_leastbranch(struct variables* ctx, int ignore) 
 static inline int getbranchindex(struct sockaddr_in* t, struct variables* ctx) {
     time_t now = time(NULL);
     for (int i = 0; i < CONNUM; i++) {
-        if(ctx->caddr[i].sin_port == t->sin_port &&
-           ctx->caddr[i].sin_addr.s_addr == t->sin_addr.s_addr) {
-            ctx->lasttscon[i] = now;
+        if(ctx->client[i].caddr.sin_port == t->sin_port &&
+           ctx->client[i].caddr.sin_addr.s_addr == t->sin_addr.s_addr) {
+            ctx->client[i].lasttscon = now;
             return i;
         }
     }
     time_t l = now - FORGETTING_IN_SEC;
     for (int i = 0; i < CONNUM; i++) {
-        if (ctx->lasttscon[i] > 0 && ctx->branchfd[i] > -1 && ctx->lasttscon[i] < l) {
-            if (ctx->verbose) printf("close branchfd[%d]=%d\n", i, ctx->branchfd[i]);
-            close(ctx->branchfd[i]);
-            ctx->branchfd[i] = -1;
-            ctx->lasttscon[i] = 0;
-            setzero_sockaddr_in(&(ctx->caddr[i]));
-            ctx->activecount[ctx->branchindexinconn[i]]--;
+        if (ctx->client[i].lasttscon > 0 && ctx->client[i].fd > -1 && ctx->client[i].lasttscon < l) {
+            if (ctx->verbose) printf("close branchfd[%d]=%d\n", i, ctx->client[i].fd);
+            close(ctx->client[i].fd);
+            ctx->client[i].fd = -1;
+            ctx->client[i].lasttscon = 0;
+            setzero_sockaddr_in(&(ctx->client[i].caddr));
+            ctx->branch[ctx->client[i].branchindexinconn].activecount--;
             // ctx->branchindexinconn[i] = -1
         }
     }
     for (int i = 0; i < CONNUM; i++) {
-        if (ctx->branchfd[i] == -1) {
-            ctx->branchfd[i] = branchsocket(ctx->spoof);
+        if (ctx->client[i].fd == -1) {
+            ctx->client[i].fd = branchsocket(ctx->spoof);
             int newindex = ctx->newbranchindex(ctx, i);
-            ctx->branchaddr[i] = ctx->branch_s_addr[newindex];
-            ctx->caddr[i] = *t;
+            ctx->client[i].branchaddr = ctx->branch[newindex].s_addr;
+            ctx->client[i].caddr = *t;
 
-            ctx->branchindexinconn[i] = newindex;
-            ctx->activecount[newindex]++;
+            ctx->client[i].branchindexinconn = newindex;
+            ctx->branch[newindex].activecount++;
 
-            if (ctx->verbose) printf("assign branchfd[%d]=%d\n", i, ctx->branchfd[i]);
+            if (ctx->verbose) printf("assign branchfd[%d]=%d\n", i, ctx->client[i].fd);
 
             return i;
         }
@@ -281,7 +276,7 @@ void process(struct variables* ctx) {
         FD_ZERO(&rset);
         FD_SET(ctx->sockfd, &rset);
         for (int i = 0; i < CONNUM; i++) {
-            if (ctx->branchfd[i] >= 0) FD_SET(ctx->branchfd[i], &rset);
+            if (ctx->client[i].fd >= 0) FD_SET(ctx->client[i].fd, &rset);
         }
 
         if (select(nfds(ctx), &rset, NULL, NULL, NULL) < 0) {
@@ -290,7 +285,7 @@ void process(struct variables* ctx) {
 
         for (int i = 0; i < CONNUM; i++) {
             // socket corresponding for branch-i
-            int fd = ctx->branchfd[i];
+            int fd = ctx->client[i].fd;
             if (fd < 0) continue;
             if (!FD_ISSET(fd, &rset)) continue;
             // this is a signaled fd.
@@ -306,7 +301,7 @@ void process(struct variables* ctx) {
             }
             // relay to client i.
             if (sendto(ctx->sockfd, (const char*) buffer, len, 0,
-                       (struct sockaddr*) &(ctx->caddr[i]), sizeof(ctx->caddr[i])) < 0) {
+                       (struct sockaddr*) &(ctx->client[i].caddr), sizeof(ctx->client[i].caddr)) < 0) {
 #if DEBUG
                 printf("failed to sendto client for (i=%d, fd=%d)\n", i, fd);
 #endif
@@ -339,19 +334,19 @@ void process(struct variables* ctx) {
 #endif
                 ctx->failed_assign++;
             } else if (ctx->spoof) {
-                if (raw_send_from_to(ctx->branchfd[branchidx], buffer, len,
+                if (raw_send_from_to(ctx->client[branchidx].fd, buffer, len,
                                     (struct sockaddr*) &t,
-                                    (struct sockaddr*) &(ctx->branchaddr[branchidx]), 63, 1) < 0) {
+                                    (struct sockaddr*) &(ctx->client[branchidx].branchaddr), 63, 1) < 0) {
 #if DEBUG
                     printf("failed to send raw packet to branch[%d]\n", branchidx);
 #endif
                     ctx->error_sendto++;
                 }
-            } else if (sendto(ctx->branchfd[branchidx], buffer, len, 0,
-                              (struct sockaddr*) &(ctx->branchaddr[branchidx]),
-                              sizeof(ctx->branchaddr[branchidx])) < 0) {
+            } else if (sendto(ctx->client[branchidx].fd, buffer, len, 0,
+                              (struct sockaddr*) &(ctx->client[branchidx].branchaddr),
+                              sizeof(ctx->client[branchidx].branchaddr)) < 0) {
 #if DEBUG
-                printf("failed to send raw packet to branch[%d]\n", branchidx);
+                printf("failed to send udp packet to branch[%d]\n", branchidx);
 #endif
                 ctx->error_sendto++;
             }
@@ -369,7 +364,7 @@ int main(int ac, char** av) {
         printf("balancing method=%s\n", ctx.method==leastconn ? "least" : "naive");
         printf("accepting port=%d %s\n", ctx.selfport, ctx.spoof ? "with nat" : "");
         for (int i=0; i < ctx.branchnum; i++)
-            printf("branch[%d]=%s\n", i, ctx.branch_hostargs[i]);
+            printf("branch[%d]=%s\n", i, ctx.branch[i].hostargs);
     }
 
     init_acceptor(&ctx);
