@@ -60,7 +60,6 @@ void parse_host_port(const char* arg, char* host, unsigned short* port) {
     if (strlen(arg)>64) {
         error("weird length of argument");
     }
-    // now ipv4 only
 
     char bufhost[64], bufport[64];
     const char *a = arg;
@@ -180,9 +179,10 @@ int init_acceptor(struct variables *ctx) {
         error("getaddrinfo");
     }
 #if DEBUG
-        printf("res->ai_addrlen=%d\n",res->ai_addrlen);
+    printf("res->ai_addrlen=%d\n",res->ai_addrlen);
 #endif
 
+    // just head entry
     ctx->sockfd = socket(res->ai_family, res->ai_socktype, 0);
     if (ctx->sockfd < 0) error("socket");
     setsockopt(ctx->sockfd, SOL_SOCKET, SO_REUSEADDR, (const void *) &optval, sizeof(int));
