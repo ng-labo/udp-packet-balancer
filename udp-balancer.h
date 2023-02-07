@@ -15,6 +15,21 @@
 
 enum selectmethod { rotation, leastconn };
 
+struct branch {
+    char hostargs[80];
+    struct sockaddr_in s_addr;
+    int activecount;
+};
+
+struct client {
+    int fd; // to branch socket
+    struct sockaddr* caddr;
+    size_t caddrlen;
+    struct sockaddr_in6 caddr_buf; // as longer size structure
+    time_t lasttscon;
+    int connindex;;
+};
+    
 struct variables {
     // setting and derived
     int spoof;
@@ -25,22 +40,18 @@ struct variables {
     int (*newbranchindex)(struct variables*, int);
 
     int branchnum;
-    char branch_hostargs[BRANCHNUMMAX][80]; // keep from argument
-    struct sockaddr_in branch_s_addr[BRANCHNUMMAX]; // caching when initializing
+    struct branch branch[BRANCHNUMMAX];
 
     char selfhost[64];
     unsigned short selfport;
 
     // processing values
     int sockfd;
-    struct sockaddr_in selfaddr;
-    int branchfd[CONNUM];
-    struct sockaddr_in caddr[CONNUM];
-    struct sockaddr_in branchaddr[CONNUM];
-    time_t lasttscon[CONNUM];
-    int branchindexinconn[CONNUM];
+    struct sockaddr* selfaddr;
+    size_t selfaddrlen;
+    struct sockaddr_in6 selfaddr_buf; // as longer size structure
 
-    int activecount[BRANCHNUMMAX];
+    struct client brokers[CONNUM];
     
     // statistics counter
     unsigned long new_connection;
